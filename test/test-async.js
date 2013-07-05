@@ -697,6 +697,82 @@ exports['parallel limit object'] = function(test){
     });
 };
 
+exports['parallel wait'] = function(test){
+    var call_order = [];
+    async.parallelWait([
+        function(callback){
+            setTimeout(function(){
+                call_order.push(1);
+                callback(null, 1);
+            }, 50);
+        },
+        function(callback){
+            setTimeout(function(){
+                call_order.push(2);
+                callback(null, 2);
+            }, 100);
+        },
+        function(callback){
+            setTimeout(function(){
+                call_order.push(3);
+                callback(null, 3,3);
+            }, 25);
+        }
+    ],
+    function(err, results){
+        test.equals(err, null);
+        test.same(call_order, [3,1,2]);
+        test.same(results, [1,2,[3,3]]);
+        test.done();
+    });
+};
+
+exports['parallel wait error'] = function(test){
+    var completed = 0;
+    async.parallelWait([
+        function (callback) {
+            setTimeout(function () {
+                completed++;
+                callback();
+            }, 10);
+        },
+        function(callback){
+            callback('error', 1);
+        },
+        function(callback){
+            callback('error2', 2);
+        }
+    ],
+    function(err, results){
+        test.equals(completed, 1);
+        test.equals(err, 'error');
+    });
+    setTimeout(test.done, 100);
+};
+
+exports['parallel wait object error'] = function(test){
+    var completed = 0;
+    async.parallelWait({
+        a: function (callback) {
+            setTimeout(function () {
+                completed++;
+                callback();
+            }, 10);
+        },
+        b: function(callback){
+            callback('error', 1);
+        },
+        c: function(callback){
+            callback('error2', 2);
+        }
+    },
+    function(err, results){
+        test.equals(completed, 1);
+        test.equals(err, 'error');
+    });
+    setTimeout(test.done, 100);
+};
+
 exports['series'] = function(test){
     var call_order = [];
     async.series([
@@ -872,6 +948,35 @@ exports['each error'] = function(test){
 
 exports['each no callback'] = function(test){
     async.each([1], eachNoCallbackIterator.bind(this, test));
+};
+
+exports['each wait'] = function (test) {
+    var args = [];
+    async.eachWait([1,3,2], eachIterator.bind(this, args), function(err){
+        test.same(args, [1,2,3]);
+        test.done();
+    });
+};
+
+exports['each wait error'] = function (test) {
+    var completed = 0;
+    async.eachWait([1,2,3], function(x, callback){
+        if(x === 2) {
+            completed++;
+            callback('error');
+        }
+        else {
+            setTimeout(function () {
+                completed++;
+                callback();
+            }, x*25);
+        }
+    }, function(err){
+        console.log(completed);
+        test.equals(completed, 3);
+        test.equals(err, 'error');
+        test.done();
+    });
 };
 
 exports['forEach alias'] = function (test) {
@@ -1688,7 +1793,6 @@ exports['doUntil'] = function (test) {
     var count = 0;
     async.doUntil(
         function (cb) {
-            debugger
             call_order.push(['iterator', count]);
             count++;
             cb();
@@ -1755,7 +1859,6 @@ exports['doWhilst'] = function (test) {
             return (count < 5);
         },
         function (err) {
-            debugger
             test.same(call_order, [
                 ['iterator', 0], ['test', 1],
                 ['iterator', 1], ['test', 2],
