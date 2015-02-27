@@ -261,6 +261,93 @@ exports['compose binding'] = function (test) {
     });
 };
 
+exports['seq'] = function (test) {
+    test.expect(4);
+    var add2 = function (n, cb) {
+        test.equal(n, 3);
+        setTimeout(function () {
+            cb(null, n + 2);
+        }, 50);
+    };
+    var mul3 = function (n, cb) {
+        test.equal(n, 5);
+        setTimeout(function () {
+            cb(null, n * 3);
+        }, 15);
+    };
+    var add1 = function (n, cb) {
+        test.equal(n, 15);
+        setTimeout(function () {
+            cb(null, n + 1);
+        }, 100);
+    };
+    var add2mul3add1 = async.seq(add2, mul3, add1);
+    add2mul3add1(3, function (err, result) {
+        if (err) {
+            return test.done(err);
+        }
+        test.equal(result, 16);
+        test.done();
+    });
+};
+
+exports['seq error'] = function (test) {
+    test.expect(3);
+    var testerr = new Error('test');
+
+    var add2 = function (n, cb) {
+        test.equal(n, 3);
+        setTimeout(function () {
+            cb(null, n + 2);
+        }, 50);
+    };
+    var mul3 = function (n, cb) {
+        test.equal(n, 5);
+        setTimeout(function () {
+            cb(testerr);
+        }, 15);
+    };
+    var add1 = function (n, cb) {
+        test.ok(false, 'add1 should not get called');
+        setTimeout(function () {
+            cb(null, n + 1);
+        }, 100);
+    };
+    var add2mul3add1 = async.seq(add2, mul3, add1);
+    add2mul3add1(3, function (err, result) {
+        test.equal(err, testerr);
+        test.done();
+    });
+};
+
+exports['seq binding'] = function (test) {
+    test.expect(4);
+    var testerr = new Error('test');
+    var testcontext = {name: 'foo'};
+
+    var add2 = function (n, cb) {
+        test.equal(this, testcontext);
+        setTimeout(function () {
+            cb(null, n + 2);
+        }, 50);
+    };
+    var mul3 = function (n, cb) {
+        test.equal(this, testcontext);
+        setTimeout(function () {
+            cb(null, n * 3);
+        }, 15);
+    };
+    var add2mul3 = async.seq(add2, mul3);
+    add2mul3.call(testcontext, 3, function (err, result) {
+        if (err) {
+            return test.done(err);
+        }
+        test.equal(this, testcontext);
+        test.equal(result, 15);
+        test.done();
+    });
+};
+
 exports['auto'] = function(test){
     var callOrder = [];
     var testdata = [{test: 'test'}];
@@ -431,6 +518,124 @@ exports['auto removeListener has side effect on loop iterator'] = function(test)
     });
 };
 
+// Issue 410 on github: https://github.com/caolan/async/issues/410
+exports['auto calls callback multiple times'] = function(test) {
+    if (typeof process === 'undefined') {
+        // node only test
+        test.done();
+        return;
+    }
+    var finalCallCount = 0;
+    var domain = require('domain').create();
+    domain.on('error', function (e) {
+        // ignore test error
+        if (!e._test_error) {
+            return test.done(e);
+        }
+    });
+    domain.run(function () {
+        async.auto({
+            task1: function(callback) { callback(null); },
+            task2: ['task1', function(callback) { callback(null); }]
+        },
+
+        // Error throwing final callback. This should only run once
+        function(err) {
+            finalCallCount++;
+            var e = new Error("An error");
+            e._test_error = true;
+            throw e;
+        });
+    });
+    setTimeout(function () {
+        test.equal(finalCallCount, 1,
+            "Final auto callback should only be called once"
+        );
+        test.done();
+    }, 10);
+};
+
+// Issue 462 on github: https://github.com/caolan/async/issues/462
+exports['auto modifying results causes final callback to run early'] = function(test) {
+    async.auto({
+        task1: function(callback, results){
+            results.inserted = true
+            callback(null, 'task1');
+        },
+        task2: function(callback){
+            setTimeout(function(){
+                callback(null, 'task2');
+            }, 50);
+        },
+        task3: function(callback){
+            setTimeout(function(){
+                callback(null, 'task3');
+            }, 100);
+        }
+    },
+    function(err, results){
+        test.equal(results.inserted, true)
+        test.ok(results.task3, 'task3')
+        test.done();
+    });
+};
+
+// Issue 306 on github: https://github.com/caolan/async/issues/306
+exports['retry when attempt succeeds'] = function(test) {
+    var failed = 3
+    var callCount = 0
+    var expectedResult = 'success'
+    function fn(callback, results) {
+        callCount++
+        failed--
+        if (!failed) callback(null, expectedResult)
+        else callback(true) // respond with error
+    }
+    async.retry(fn, function(err, result){
+        test.equal(callCount, 3, 'did not retry the correct number of times')
+        test.equal(result, expectedResult, 'did not return the expected result')
+        test.done();
+    });
+};
+
+exports['retry when all attempts succeeds'] = function(test) {
+    var times = 3;
+    var callCount = 0;
+    var error = 'ERROR';
+    var erroredResult = 'RESULT';
+    function fn(callback, results) {
+        callCount++;
+        callback(error + callCount, erroredResult + callCount); // respond with indexed values
+    };
+    async.retry(times, fn, function(err, result){
+        test.equal(callCount, 3, "did not retry the correct number of times");
+        test.equal(err, error + times, "Incorrect error was returned");
+        test.equal(result, erroredResult + times, "Incorrect result was returned");
+        test.done();
+    });
+};
+
+exports['retry as an embedded task'] = function(test) {
+    var retryResult = 'RETRY';
+    var fooResults;
+    var retryResults;
+
+    async.auto({
+        foo: function(callback, results){
+            fooResults = results;
+            callback(null, 'FOO');
+        },
+        retry: async.retry(function(callback, results) {
+            retryResults = results;
+            callback(null, retryResult);
+        })
+    }, function(err, results){
+        test.equal(results.retry, retryResult, "Incorrect result was returned from retry function");
+        test.equal(fooResults, retryResults, "Incorrect results were passed to retry function");
+        test.done();
+    });
+};
+
 exports['waterfall'] = function(test){
     test.expect(6);
     var call_order = [];
@@ -544,6 +749,33 @@ exports['waterfall multiple callback calls'] = function(test){
         }
     ];
     async.waterfall(arr);
+};
+
+exports['waterfall call in another context'] = function(test) {
+    if (typeof process === 'undefined') {
+        // node only test
+        test.done();
+        return;
+    }
+
+    var vm = require('vm');
+    var sandbox = {
+        async: async,
+        test: test
+    };
+
+    var fn = "(" + (function () {
+        async.waterfall([function (callback) {
+            callback();
+        }], function (err) {
+            if (err) {
+                return test.done(err);
+            }
+            test.done();
+        });
+    }).toString() + "())";
+
+    vm.runInNewContext(fn, sandbox);
 };
 
 
@@ -773,6 +1005,32 @@ exports['parallel wait object error'] = function(test){
     setTimeout(test.done, 100);
 };
 
+exports['parallel call in another context'] = function(test) {
+    if (typeof process === 'undefined') {
+        // node only test
+        test.done();
+        return;
+    }
+    var vm = require('vm');
+    var sandbox = {
+        async: async,
+        test: test
+    };
+
+    var fn = "(" + (function () {
+        async.parallel([function (callback) {
+            callback();
+        }], function (err) {
+            if (err) {
+                return test.done(err);
+            }
+            test.done();
+        });
+    }).toString() + "())";
+
+    vm.runInNewContext(fn, sandbox);
+};
+
 exports['series'] = function(test){
     var call_order = [];
     async.series([
@@ -848,6 +1106,33 @@ exports['series object'] = function(test){
         test.done();
     });
 };
+
+exports['series call in another context'] = function(test) {
+    if (typeof process === 'undefined') {
+        // node only test
+        test.done();
+        return;
+    }
+    var vm = require('vm');
+    var sandbox = {
+        async: async,
+        test: test
+    };
+
+    var fn = "(" + (function () {
+        async.series([function (callback) {
+            callback();
+        }], function (err) {
+            if (err) {
+                return test.done(err);
+            }
+            test.done();
+        });
+    }).toString() + "())";
+
+    vm.runInNewContext(fn, sandbox);
+};
+
 
 exports['iterator'] = function(test){
     var call_order = [];
@@ -1134,6 +1419,19 @@ exports['map original untouched'] = function(test){
         test.same(results, [2,4,6]);
         test.same(a, [1,2,3]);
         test.done();
+    });
+};
+
+exports['map without main callback'] = function(test){
+    var a = [1,2,3];
+    var r = [];
+    async.map(a, function(x, callback){
+        r.push(x);
+        callback(null);
+        if (r.length >= a.length) {
+            test.same(r, a);
+            test.done();
+        }
     });
 };
 
@@ -1490,6 +1788,15 @@ exports['sortBy'] = function(test){
     });
 };
 
+exports['sortBy inverted'] = function(test){
+    async.sortBy([{a:1},{a:15},{a:6}], function(x, callback){
+        setTimeout(function(){callback(null, x.a*-1);}, 0);
+    }, function(err, result){
+        test.same(result, [{a:15},{a:6},{a:1}]);
+        test.done();
+    });
+};
+
 exports['apply'] = function(test){
     test.expect(6);
     var fn = function(){
@@ -1679,15 +1986,13 @@ exports['noConflict - node only'] = function(test){
         // node only test
         test.expect(3);
         var fs = require('fs');
+        var vm = require('vm');
         var filename = __dirname + '/../lib/async.js';
         fs.readFile(filename, function(err, content){
             if(err) return test.done();
 
-            // Script -> NodeScript in node v0.6.x
-            var Script = process.binding('evals').Script || process.binding('evals').NodeScript;
-
-            var s = new Script(content, filename);
-            var s2 = new Script(
+            var s = vm.createScript(content, filename);
+            var s2 = vm.createScript(
                 content + 'this.async2 = this.async.noConflict();',
                 filename
             );
@@ -1815,6 +2120,33 @@ exports['doUntil'] = function (test) {
     );
 };
 
+exports['doUntil callback params'] = function (test) {
+    var call_order = [];
+    var count = 0;
+    async.doUntil(
+        function (cb) {
+            call_order.push(['iterator', count]);
+            count++;
+            cb(null, count);
+        },
+        function (c) {
+            call_order.push(['test', c]);
+            return (c == 5);
+        },
+        function (err) {
+            test.same(call_order, [
+                ['iterator', 0], ['test', 1],
+                ['iterator', 1], ['test', 2],
+                ['iterator', 2], ['test', 3],
+                ['iterator', 3], ['test', 4],
+                ['iterator', 4], ['test', 5]
+            ]);
+            test.equals(count, 5);
+            test.done();
+        }
+    );
+};
+
 exports['whilst'] = function (test) {
     var call_order = [];
 
@@ -1857,6 +2189,34 @@ exports['doWhilst'] = function (test) {
         function () {
             call_order.push(['test', count]);
             return (count < 5);
+        },
+        function (err) {
+            test.same(call_order, [
+                ['iterator', 0], ['test', 1],
+                ['iterator', 1], ['test', 2],
+                ['iterator', 2], ['test', 3],
+                ['iterator', 3], ['test', 4],
+                ['iterator', 4], ['test', 5]
+            ]);
+            test.equals(count, 5);
+            test.done();
+        }
+    );
+};
+
+exports['doWhilst callback params'] = function (test) {
+    var call_order = [];
+
+    var count = 0;
+    async.doWhilst(
+        function (cb) {
+            call_order.push(['iterator', count]);
+            count++;
+            cb(null, count);
+        },
+        function (c) {
+            call_order.push(['test', c]);
+            return (c < 5);
         },
         function (err) {
             test.same(call_order, [
@@ -2164,6 +2524,257 @@ exports['queue bulk task'] = function (test) {
     }, 800);
 };
 
+exports['queue idle'] = function(test) {
+    var q = async.queue(function (task, callback) {
+      // Queue is busy when workers are running
+      test.equal(q.idle(), false)
+      callback();
+    }, 1);
+
+    // Queue is idle before anything added
+    test.equal(q.idle(), true)
+
+    q.unshift(4);
+    q.unshift(3);
+    q.unshift(2);
+    q.unshift(1);
+
+    // Queue is busy when tasks added
+    test.equal(q.idle(), false)
+
+    q.drain = function() {
+        // Queue is idle after drain
+        test.equal(q.idle(), true);
+        test.done();
+    }
+}
+
+exports['queue pause'] = function(test) {
+    var call_order = [],
+        task_timeout = 100,
+        pause_timeout = 300,
+        resume_timeout = 500,
+        tasks = [ 1, 2, 3, 4, 5, 6 ],
+
+        elapsed = (function () {
+            var start = (new Date()).valueOf();
+            return function () {
+              return Math.round(((new Date()).valueOf() - start) / 100) * 100;
+            };
+        })();
+
+    var q = async.queue(function (task, callback) {
+        call_order.push('process ' + task);
+        call_order.push('timeout ' + elapsed());
+        callback();
+    });
+
+    function pushTask () {
+        var task = tasks.shift();
+        if (!task) { return; }
+        setTimeout(function () {
+            q.push(task);
+            pushTask();
+        }, task_timeout);
+    }
+    pushTask();
+
+    setTimeout(function () {
+        q.pause();
+        test.equal(q.paused, true);
+    }, pause_timeout);
+
+    setTimeout(function () {
+        q.resume();
+        test.equal(q.paused, false);
+    }, resume_timeout);
+
+    setTimeout(function () {
+        test.same(call_order, [
+            'process 1', 'timeout 100',
+            'process 2', 'timeout 200',
+            'process 3', 'timeout 500',
+            'process 4', 'timeout 500',
+            'process 5', 'timeout 500',
+            'process 6', 'timeout 600'
+        ]);
+        test.done();
+    }, 800);
+}
+
+exports['queue pause with concurrency'] = function(test) {
+    var call_order = [],
+        task_timeout = 100,
+        pause_timeout = 50,
+        resume_timeout = 300,
+        tasks = [ 1, 2, 3, 4, 5, 6 ],
+
+        elapsed = (function () {
+            var start = (new Date()).valueOf();
+            return function () {
+              return Math.round(((new Date()).valueOf() - start) / 100) * 100;
+            };
+        })();
+
+    var q = async.queue(function (task, callback) {
+        setTimeout(function () {
+            call_order.push('process ' + task);
+            call_order.push('timeout ' + elapsed());
+            callback();
+        }, task_timeout);
+    }, 2);
+
+    q.push(tasks);
+
+    setTimeout(function () {
+        q.pause();
+        test.equal(q.paused, true);
+    }, pause_timeout);
+
+    setTimeout(function () {
+        q.resume();
+        test.equal(q.paused, false);
+    }, resume_timeout);
+
+    setTimeout(function () {
+        test.same(call_order, [
+            'process 1', 'timeout 100',
+            'process 2', 'timeout 100',
+            'process 3', 'timeout 400',
+            'process 4', 'timeout 400',
+            'process 5', 'timeout 500',
+            'process 6', 'timeout 500'
+        ]);
+        test.done();
+    }, 800);
+}
+
+exports['queue kill'] = function (test) {
+    var q = async.queue(function (task, callback) {
+        setTimeout(function () {
+            test.ok(false, "Function should never be called");
+            callback();
+        }, 300);
+    }, 1);
+    q.drain = function() {
+        test.ok(false, "Function should never be called");
+    }
+
+    q.push(0);
+
+    q.kill();
+
+    setTimeout(function() {
+      test.equal(q.length(), 0);
+      test.done();
+    }, 600)
+};
+
+exports['priorityQueue'] = function (test) {
+    var call_order = [];
+
+    // order of completion: 2,1,4,3
+
+    var q = async.priorityQueue(function (task, callback) {
+      call_order.push('process ' + task);
+      callback('error', 'arg');
+    }, 1);
+
+    q.push(1, 1.4, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 2);
+        call_order.push('callback ' + 1);
+    });
+    q.push(2, 0.2, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 3);
+        call_order.push('callback ' + 2);
+    });
+    q.push(3, 3.8, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 0);
+        call_order.push('callback ' + 3);
+    });
+    q.push(4, 2.9, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 1);
+        call_order.push('callback ' + 4);
+    });
+    test.equal(q.length(), 4);
+    test.equal(q.concurrency, 1);
+
+    q.drain = function () {
+        test.same(call_order, [
+            'process 2', 'callback 2',
+            'process 1', 'callback 1',
+            'process 4', 'callback 4',
+            'process 3', 'callback 3'
+        ]);
+        test.equal(q.concurrency, 1);
+        test.equal(q.length(), 0);
+        test.done();
+    };
+};
+
+exports['priorityQueue concurrency'] = function (test) {
+    var call_order = [],
+        delays = [160,80,240,80];
+
+    // worker1: --2-3
+    // worker2: -1---4
+    // order of completion: 1,2,3,4
+
+    var q = async.priorityQueue(function (task, callback) {
+        setTimeout(function () {
+            call_order.push('process ' + task);
+            callback('error', 'arg');
+        }, delays.splice(0,1)[0]);
+    }, 2);
+
+    q.push(1, 1.4, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 2);
+        call_order.push('callback ' + 1);
+    });
+    q.push(2, 0.2, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 1);
+        call_order.push('callback ' + 2);
+    });
+    q.push(3, 3.8, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 0);
+        call_order.push('callback ' + 3);
+    });
+    q.push(4, 2.9, function (err, arg) {
+        test.equal(err, 'error');
+        test.equal(arg, 'arg');
+        test.equal(q.length(), 0);
+        call_order.push('callback ' + 4);
+    });
+    test.equal(q.length(), 4);
+    test.equal(q.concurrency, 2);
+
+    q.drain = function () {
+        test.same(call_order, [
+            'process 1', 'callback 1',
+            'process 2', 'callback 2',
+            'process 3', 'callback 3',
+            'process 4', 'callback 4'
+        ]);
+        test.equal(q.concurrency, 2);
+        test.equal(q.length(), 0);
+        test.done();
+    };
+};
+
 exports['cargo'] = function (test) {
     var call_order = [],
         delays = [160, 160, 80];
@@ -2298,28 +2909,115 @@ exports['cargo bulk task'] = function (test) {
     }, 800);
 };
 
+exports['cargo drain once'] = function (test) {
+
+   var c = async.cargo(function (tasks, callback) {
+      callback();
+    }, 3);
+
+    var drainCounter = 0;
+    c.drain = function () {
+      drainCounter++;
+    }
+
+    for(var i = 0; i < 10; i++){
+      c.push(i);
+    }
+
+    setTimeout(function(){
+      test.equal(drainCounter, 1);
+      test.done();
+    }, 500);
+};
+
+exports['cargo drain twice'] = function (test) {
+
+    var c = async.cargo(function (tasks, callback) {
+      callback();
+    }, 3);
+
+    var loadCargo = function(){
+      for(var i = 0; i < 10; i++){
+        c.push(i);
+      }
+    };
+
+    var drainCounter = 0;
+    c.drain = function () {
+      drainCounter++;
+    }
+
+    loadCargo();
+    setTimeout(loadCargo, 500);
+
+    setTimeout(function(){
+      test.equal(drainCounter, 2);
+      test.done();
+    }, 1000);
+};
+
 exports['memoize'] = function (test) {
     test.expect(4);
     var call_order = [];
 
     var fn = function (arg1, arg2, callback) {
-        call_order.push(['fn', arg1, arg2]);
-        callback(null, arg1 + arg2);
+        async.setImmediate(function () {
+            call_order.push(['fn', arg1, arg2]);
+            callback(null, arg1 + arg2);
+        });
     };
 
     var fn2 = async.memoize(fn);
     fn2(1, 2, function (err, result) {
         test.equal(result, 3);
+        fn2(1, 2, function (err, result) {
+            test.equal(result, 3);
+            fn2(2, 2, function (err, result) {
+                test.equal(result, 4);
+                test.same(call_order, [['fn',1,2], ['fn',2,2]]);
+                test.done();
+            });
+        });
     });
+};
+
+exports['memoize maintains asynchrony'] = function (test) {
+    test.expect(3);
+    var call_order = [];
+
+    var fn = function (arg1, arg2, callback) {
+        call_order.push(['fn', arg1, arg2]);
+        async.setImmediate(function () {
+            call_order.push(['cb', arg1, arg2]);
+            callback(null, arg1 + arg2);
+        });
+    };
+
+    var fn2 = async.memoize(fn);
     fn2(1, 2, function (err, result) {
         test.equal(result, 3);
+        fn2(1, 2, function (err, result) {
+            test.equal(result, 3);
+            async.nextTick(memoize_done);
+            call_order.push('tick3');
+        });
+        call_order.push('tick2');
     });
-    fn2(2, 2, function (err, result) {
-        test.equal(result, 4);
-    });
+    call_order.push('tick1');
 
-    test.same(call_order, [['fn',1,2], ['fn',2,2]]);
-    test.done();
+    function memoize_done() {
+        var async_call_order = [
+            ['fn',1,2],             // initial async call
+            'tick1',                // async caller
+            ['cb',1,2],             // async callback
+        //  ['fn',1,2], // memoized // memoized async body
+            'tick2',                // handler for first async call
+        //  ['cb',1,2], // memoized // memoized async response body
+            'tick3'                 // handler for memoized async call
+        ];
+        test.same(call_order, async_call_order);
+        test.done();
+    }
 };
 
 exports['unmemoize'] = function(test) {
@@ -2328,24 +3026,24 @@ exports['unmemoize'] = function(test) {
 
     var fn = function (arg1, arg2, callback) {
         call_order.push(['fn', arg1, arg2]);
-        callback(null, arg1 + arg2);
+        async.setImmediate(function () {
+            callback(null, arg1 + arg2);
+        });
     };
 
     var fn2 = async.memoize(fn);
     var fn3 = async.unmemoize(fn2);
     fn3(1, 2, function (err, result) {
         test.equal(result, 3);
+        fn3(1, 2, function (err, result) {
+            test.equal(result, 3);
+            fn3(2, 2, function (err, result) {
+                test.equal(result, 4);
+                test.same(call_order, [['fn',1,2], ['fn',1,2], ['fn',2,2]]);
+                test.done();
+            });
+        });
     });
-    fn3(1, 2, function (err, result) {
-        test.equal(result, 3);
-    });
-    fn3(2, 2, function (err, result) {
-        test.equal(result, 4);
-    });
-
-    test.same(call_order, [['fn',1,2], ['fn',1,2], ['fn',2,2]]);
-
-    test.done();
 }
 
 exports['unmemoize a not memoized function'] = function(test) {
@@ -2405,11 +3103,11 @@ exports['memoize custom hash function'] = function (test) {
     });
     fn2(1, 2, function (err, result) {
         test.equal(result, 3);
+        fn2(2, 2, function (err, result) {
+            test.equal(result, 3);
+            test.done();
+        });
     });
-    fn2(2, 2, function (err, result) {
-        test.equal(result, 3);
-    });
-    test.done();
 };
 
 exports['memoize manually added memo value'] = function (test) {
@@ -2500,7 +3198,8 @@ exports['queue events'] = function(test) {
         // nop
         calls.push('process ' + task);
         async.setImmediate(cb);
-    }, 3);
+    }, 10);
+    q.concurrency = 3;
 
     q.saturated = function() {
         test.ok(q.length() == 3, 'queue should be saturated now');
@@ -2539,3 +3238,38 @@ exports['queue events'] = function(test) {
     q.push('poo', function () {calls.push('poo cb');});
     q.push('moo', function () {calls.push('moo cb');});
 };
+
+exports['queue empty'] = function(test) {
+    var calls = [];
+    var q = async.queue(function(task, cb) {
+        // nop
+        calls.push('process ' + task);
+        async.setImmediate(cb);
+    }, 3);
+
+    q.drain = function() {
+        test.ok(
+            q.length() == 0 && q.running() == 0,
+            'queue should be empty now and no more workers should be running'
+        );
+        calls.push('drain');
+        test.same(calls, [
+            'drain'
+        ]);
+        test.done();
+    };
+    q.push([]);
+};
+
+exports['queue started'] = function(test) {
+
+  var calls = [];
+  var q = async.queue(function(task, cb) {});
+
+  test.equal(q.started, false);
+  q.push([]);
+  test.equal(q.started, true);
+  test.done();
+
+};
+
